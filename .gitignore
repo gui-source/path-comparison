@@ -1,0 +1,8 @@
+.DS_Store
+.config
+bake/
+build.py
+constants.py
+netanim-3.109/
+util.py
+ns-3.40/traces/*
