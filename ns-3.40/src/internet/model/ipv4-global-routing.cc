@@ -40,6 +40,8 @@ NS_LOG_COMPONENT_DEFINE("Ipv4GlobalRouting");
 
 NS_OBJECT_ENSURE_REGISTERED(Ipv4GlobalRouting);
 
+static bool ALTINDEX = true;
+
 TypeId
 Ipv4GlobalRouting::GetTypeId()
 {
@@ -205,14 +207,23 @@ Ipv4GlobalRouting::LookupGlobal(Ipv4Address dest, Ptr<NetDevice> oif)
         // ECMP routing is enabled, or always select the first route
         // consistently if random ECMP routing is disabled
         uint32_t selectIndex;
-        if (m_randomEcmpRouting)
-        {
-            selectIndex = m_rand->GetInteger(0, allRoutes.size() - 1);
+        
+        // for one flow alternation
+        if (allRoutes.size() > 1 && dest.Get() == 167773442){
+            if (ALTINDEX) {
+                selectIndex = 1;
+            }
+            else {
+                selectIndex = 0;
+            }
+            ALTINDEX = !ALTINDEX;
         }
-        else
-        {
+        else{
             selectIndex = 0;
         }
+
+        // selectIndex=0;
+        
         Ipv4RoutingTableEntry* route = allRoutes.at(selectIndex);
         // create a Ipv4Route object from the selected routing table entry
         rtentry = Create<Ipv4Route>();
