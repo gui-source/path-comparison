@@ -492,6 +492,13 @@ class Packet : public SimpleRefCount<Packet>
      */
     void Print(std::ostream& os) const;
 
+    /** 
+     * Custom Functions for packet header processing (Petros)
+     */
+    Chunk * extractTcpHeader () const;
+
+    uint32_t GetPayloadSize () const;
+
     /**
      * \brief Return a string representation of the packet
      *
