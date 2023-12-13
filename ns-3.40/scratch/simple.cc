@@ -53,17 +53,20 @@ std::string delAckTimeout = "200ms";
 std::string socketFactory = "ns3::TcpSocketFactory";
 std::string qdiscTypeId = "ns3::PFifoFastQueueDisc";
 std::string tcpRecovery = "ns3::TcpClassicRecovery";
-std::string tcpVariantId = "ns3::TcpCubic";
+std::string tcpVariantId = "ns3::TcpNewReno";
+// std::string tcpVariantId = "ns3::TcpCubic";
+// std::string tcpVariantId = "ns3::TcpLinuxReno";
 bool enableSack = false;
 double minRTO = 1.0;
 
 // ---[TOPOLOGY PARAMETERS]---
 std::string bandwidth_bottleneck = "10Mbps";
 std::string bandwidth_access = "20Mbps";
-std::string delay_access = "15ms";
+std::string delay_access = "5ms";
 std::string delay_bottleneck = "20ms";
-std::string long_delay_bottleneck = "200ms";
+std::string long_delay_bottleneck = "20ms";
 std::string delay_serialization = "1.9ms";
+std::string interframe_gap = "0ms";
 
 // ---[POINTER TO THE DEVICE THAT WILL IMPLEMENT PACKET DROPING]
 NetDeviceContainer * netDeviceToDropPacket = NULL;
@@ -78,7 +81,7 @@ Ptr<PacketSink> sinker;
 
 int packetsDroppedInQueue = 0;
 int64_t lastTotalRx = 0;
-uint32_t bytes_to_send = 50000;
+uint32_t bytes_to_send = 1000;
 
 uint32_t cnt_packets = 0;
 
@@ -182,13 +185,21 @@ int main (int argc, char *argv[]){
     // Command line arguments
     CommandLine cmd;
     cmd.AddValue("tcpVariantId", "TCP variant", tcpVariantId);
-    cmd.AddValue("enableSack", "Enable/disable sack in TCP", enableSack);
+    // cmd.AddValue("enableSack", "Enable/disable sack in TCP", enableSack);
     // cmd.AddValue("seed", "The random seed", seed);
-    cmd.AddValue("simStopTime", "The simulation stop time", stopTimeSimulation);
-    cmd.AddValue("intervalTCP", "The TCP interval", intervalTCP);
+    // cmd.AddValue("simStopTime", "The simulation stop time", stopTimeSimulation);
+    // cmd.AddValue("intervalTCP", "The TCP interval", intervalTCP);
     cmd.AddValue("initialCwnd", "Initial CWND window", initialCwnd);
     cmd.AddValue("bytesToSend", "Number of bytes to send", bytes_to_send);
+    cmd.AddValue("delaySerialization", "Delay for serialization for all links", delay_serialization);
+    cmd.AddValue("delayAccess", "Delay time for all links", delay_access);
+    cmd.AddValue("delay", "Delay for R3-R2", delay_bottleneck);
+    cmd.AddValue("longDelay", "Delay for R4-R2", long_delay_bottleneck);
+    cmd.AddValue("interframeGap", "Interframe gap for src to r1", interframe_gap);
     cmd.Parse(argc, argv);
+
+    // Set Logging components
+    LogComponentEnable("TcpCongestionOps", LOG_LEVEL_INFO);
 
     // // Set Random Seed
     // Random::seed(seed);
@@ -244,26 +255,30 @@ int main (int argc, char *argv[]){
 
     // Create the point-to-point link helpers and connect two router nodes
     PointToPointHelper pointToPointRouter;
-    pointToPointRouter.SetDeviceAttribute("DataRate", StringValue(bandwidth_bottleneck));
-    pointToPointRouter.SetChannelAttribute("Delay", StringValue(delay_bottleneck));
+    pointToPointRouter.SetDeviceAttribute("DataRate", StringValue(bandwidth_access));
+    pointToPointRouter.SetChannelAttribute("Delay", StringValue(delay_access));
 
 
     PointToPointHelper pointToPointRouterWithDelay;
     pointToPointRouterWithDelay.SetDeviceAttribute("DataRate", StringValue(bandwidth_bottleneck));
-    pointToPointRouterWithDelay.SetChannelAttribute("Delay", StringValue(long_delay_bottleneck ));
+    pointToPointRouterWithDelay.SetChannelAttribute("Delay", StringValue(delay_bottleneck));
+
+    PointToPointHelper pointToPointRouterWithLongDelay;
+    pointToPointRouterWithLongDelay.SetDeviceAttribute("DataRate", StringValue(bandwidth_bottleneck));
+    pointToPointRouterWithLongDelay.SetChannelAttribute("Delay", StringValue(long_delay_bottleneck));
 
 
     NetDeviceContainer r1r3ND = pointToPointRouter.Install(routers.Get(0), routers.Get(2));
     Names::Add("IntR1->R3", r1r3ND.Get(0));
     Names::Add("IntR3->R1", r1r3ND.Get(1));
-    NetDeviceContainer r3r2ND = pointToPointRouter.Install(routers.Get(2), routers.Get(1));
+    NetDeviceContainer r3r2ND = pointToPointRouterWithDelay.Install(routers.Get(2), routers.Get(1));
     Names::Add("IntR3->R2", r3r2ND.Get(0));
     Names::Add("IntR2->R3", r3r2ND.Get(1));
 
     NetDeviceContainer r1r4ND = pointToPointRouter.Install(routers.Get(0), routers.Get(3));
     Names::Add("IntR1->R4", r1r4ND.Get(0));
     Names::Add("IntR4->R1", r1r4ND.Get(1));
-    NetDeviceContainer r4r2ND = pointToPointRouterWithDelay.Install(routers.Get(3), routers.Get(1));
+    NetDeviceContainer r4r2ND = pointToPointRouterWithLongDelay.Install(routers.Get(3), routers.Get(1));
     Names::Add("IntR4->R2", r4r2ND.Get(0));
     Names::Add("IntR2->R4", r4r2ND.Get(1));
 
@@ -273,6 +288,8 @@ int main (int argc, char *argv[]){
     pointToPointLeaf.SetChannelAttribute("Delay", StringValue(delay_access));
 
     NetDeviceContainer leftToRouter = pointToPointLeaf.Install(leftNodes.Get(0), routers.Get(0));
+    Ptr<PointToPointNetDevice> srcDevice = leftToRouter.Get(0)->GetObject<PointToPointNetDevice> ();
+    srcDevice->SetInterframeGap(Time(interframe_gap));
     NetDeviceContainer routerToRight = pointToPointLeaf.Install(routers.Get(1), rightNodes.Get(0));
     Names::Add("IntCl->R1", leftToRouter.Get(0));
     Names::Add("IntR1->Cl", leftToRouter.Get(1));
@@ -335,8 +352,6 @@ int main (int argc, char *argv[]){
     // }
 
     // netDeviceToDropPacket = &r1r2ND;
-    /* Callback to the ExaminePacket */
-    leftToRouter.Get(0)->TraceConnectWithoutContext("MacTx", MakeCallback(&ExaminePacket));
 
     /* Packet Printing is mandatory for the Packet Drop Test */
     Packet::EnablePrinting();
