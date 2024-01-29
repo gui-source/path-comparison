@@ -6,3 +6,7 @@ constants.py
 netanim-3.109/
 util.py
 ns-3.40/traces/*
+ns-3.40/build/*
+ns-3.40/cmake-cache/*
+ns-3.40/.vscode/*
+.lock-ns3_darwin_build
