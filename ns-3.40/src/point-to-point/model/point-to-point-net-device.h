@@ -154,6 +154,12 @@ class PointToPointNetDevice : public NetDevice
      */
     void Receive(Ptr<Packet> p);
 
+    // Custom Functionality to enable Link Loss (Petros)
+
+    void EnableLinkLoss(double percentage, bool storeTraces, std::string dir_store_results);
+
+    bool LostPacket();	
+
     // The remaining methods are documented in ns3::NetDevice*
 
     void SetIfIndex(const uint32_t index) override;
@@ -444,6 +450,15 @@ class PointToPointNetDevice : public NetDevice
 
     Ptr<Packet> m_currentPkt; //!< Current packet processed
 
+    /** 
+     * Custom Packet Drop & Link Loss (Petros)
+     *
+     */
+    bool link_loss_enabled = false;
+    double link_loss_percentage = 0.0;
+    bool store_drop = false;
+    std::string dir_to_store_drop = "";
+ 
     /**
      * \brief PPP to Ethernet protocol number mapping
      * \param protocol A PPP protocol number

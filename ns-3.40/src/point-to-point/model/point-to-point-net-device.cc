@@ -30,6 +30,11 @@
 #include "ns3/trace-source-accessor.h"
 #include "ns3/uinteger.h"
 
+#include "../../../libs/random/random.h"
+#include <fstream>
+
+using Random = effolkronium::random_static;
+
 namespace ns3
 {
 
@@ -233,6 +238,19 @@ PointToPointNetDevice::SetInterframeGap(Time t)
     m_tInterframeGap = t;
 }
 
+void PointToPointNetDevice::EnableLinkLoss(double percentage, bool storeTraces, std::string dir_store_results){
+  link_loss_enabled = true;
+  link_loss_percentage = percentage;
+  if(storeTraces == true){
+     store_drop = storeTraces;
+     dir_to_store_drop = dir_store_results;
+  }
+}
+
+bool PointToPointNetDevice::LostPacket(){
+    return Random::get<bool>(link_loss_percentage);
+}
+
 bool
 PointToPointNetDevice::TransmitStart(Ptr<Packet> p)
 {
@@ -255,6 +273,20 @@ PointToPointNetDevice::TransmitStart(Ptr<Packet> p)
     NS_LOG_LOGIC("Schedule TransmitCompleteEvent in " << txCompleteTime.As(Time::S));
     Simulator::Schedule(txCompleteTime, &PointToPointNetDevice::TransmitComplete, this);
 
+    // Link Loss is enabled
+    if (link_loss_enabled == true){
+        if (LostPacket() == true){
+            m_phyTxDropTrace (p);
+            if(store_drop == true){
+                std::ofstream outfile;
+                outfile.open(dir_to_store_drop + "linkDrops.txt", std::ios_base::app);
+                outfile << Simulator::Now().GetSeconds() << " " << p->ToString()  << std::endl;
+                outfile.close();
+            }
+        return false;
+        }
+    }
+    
     bool result = m_channel->TransmitStart(p, this, txTime);
     if (!result)
     {
