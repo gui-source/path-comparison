@@ -128,7 +128,7 @@ Ipv4GlobalRouting::AddASExternalRouteTo(Ipv4Address network,
 }
 
 Ptr<Ipv4Route>
-Ipv4GlobalRouting::LookupGlobal(Ipv4Address dest, Ptr<NetDevice> oif)
+Ipv4GlobalRouting::LookupGlobal(Ipv4Address src, Ipv4Address dest, Ptr<NetDevice> oif)
 {
     NS_LOG_FUNCTION(this << dest << oif);
     NS_LOG_LOGIC("Looking for route for destination " << dest);
@@ -205,14 +205,18 @@ Ipv4GlobalRouting::LookupGlobal(Ipv4Address dest, Ptr<NetDevice> oif)
         // ECMP routing is enabled, or always select the first route
         // consistently if random ECMP routing is disabled
         uint32_t selectIndex;
-        if (m_randomEcmpRouting)
-        {
-            selectIndex = m_rand->GetInteger(0, allRoutes.size() - 1);
-        }
-        else
-        {
+
+        // for one flow alternation
+        if (allRoutes.size() > 1 && src.Get() == 167773441){
             selectIndex = 0;
         }
+        else if (allRoutes.size() > 1 && src.Get() == 167773697){
+            selectIndex = 1;
+        }
+        else{
+            selectIndex = 0;
+        }
+
         Ipv4RoutingTableEntry* route = allRoutes.at(selectIndex);
         // create a Ipv4Route object from the selected routing table entry
         rtentry = Create<Ipv4Route>();
@@ -456,7 +460,7 @@ Ipv4GlobalRouting::RouteOutput(Ptr<Packet> p,
     // See if this is a unicast packet we have a route for.
     //
     NS_LOG_LOGIC("Unicast destination- looking up");
-    Ptr<Ipv4Route> rtentry = LookupGlobal(header.GetDestination(), oif);
+    Ptr<Ipv4Route> rtentry = LookupGlobal(header.GetSource(), header.GetDestination(), oif);
     if (rtentry)
     {
         sockerr = Socket::ERROR_NOTERROR;
@@ -511,7 +515,7 @@ Ipv4GlobalRouting::RouteInput(Ptr<const Packet> p,
     }
     // Next, try to find a route
     NS_LOG_LOGIC("Unicast destination- looking up global route");
-    Ptr<Ipv4Route> rtentry = LookupGlobal(header.GetDestination());
+    Ptr<Ipv4Route> rtentry = LookupGlobal(header.GetSource(), header.GetDestination());
     if (rtentry)
     {
         NS_LOG_LOGIC("Found unicast destination- calling unicast callback");

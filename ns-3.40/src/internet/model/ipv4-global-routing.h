@@ -268,11 +268,12 @@ class Ipv4GlobalRouting : public Ipv4RoutingProtocol
 
     /**
      * \brief Lookup in the forwarding table for destination.
+     * \param src source address
      * \param dest destination address
      * \param oif output interface if any (put 0 otherwise)
      * \return Ipv4Route to route the packet to reach dest address
      */
-    Ptr<Ipv4Route> LookupGlobal(Ipv4Address dest, Ptr<NetDevice> oif = nullptr);
+    Ptr<Ipv4Route> LookupGlobal(Ipv4Address src, Ipv4Address dest, Ptr<NetDevice> oif = nullptr);
 
     HostRoutes m_hostRoutes;             //!< Routes to hosts
     NetworkRoutes m_networkRoutes;       //!< Routes to networks

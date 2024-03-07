@@ -137,6 +137,8 @@ int main (int argc, char *argv[]){
     cmd.AddValue("seed", "The random seed", seed);
     cmd.AddValue("simStopTime", "The simulation stop time", stopTimeSimulation);
     cmd.AddValue("initialCwnd", "Initial CWND window", initialCwnd);
+    cmd.AddValue("lambda_1", "Lambda value for flow 1", lambda_1);
+    cmd.AddValue("lambda_2", "Lambda value for flow 2", lambda_2);
     cmd.Parse(argc, argv);
 
     // Set Random Seed
@@ -250,9 +252,9 @@ int main (int argc, char *argv[]){
     Ipv4InterfaceContainer r5destIPAddress = ipAddresses.Assign(r5destND);
     ipAddresses.NewNetwork(); 
 
-    std::cout << "From src 1 : " << src1r1IPAddress.GetAddress(0) << " to dest " << r5destIPAddress.GetAddress(1) << std::endl;
+    std::cout << "From src 1 : " << src1r1IPAddress.GetAddress(0) << " > " << r5destIPAddress.GetAddress(1) << "||" << src1r1IPAddress.GetAddress(0).Get() << std::endl;
 
-    std::cout << "From src 2 : " << src2r1IPAddress.GetAddress(0) << " to dest " << r5destIPAddress.GetAddress(1) << std::endl;
+    std::cout << "From src 2 : " << src2r1IPAddress.GetAddress(0) << " > " << r5destIPAddress.GetAddress(1) << "||" << src2r1IPAddress.GetAddress(0).Get() << std::endl;
 
     Ipv4GlobalRoutingHelper::PopulateRoutingTables();
 
