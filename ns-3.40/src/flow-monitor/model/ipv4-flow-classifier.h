@@ -23,6 +23,7 @@
 #include "flow-classifier.h"
 
 #include "ns3/ipv4-header.h"
+#include "ns3/tcp-header.h"
 
 #include <map>
 #include <stdint.h>
@@ -63,6 +64,22 @@ class Ipv4FlowClassifier : public FlowClassifier
     /// \param out_packetId packet's identifier
     bool Classify(const Ipv4Header& ipHeader,
                   Ptr<const Packet> ipPayload,
+                  uint32_t* out_flowId,
+                  uint32_t* out_packetId);
+
+
+    /// \brief try to classify the packet into flow-id and packet-id using tcp and ip headers
+    ///
+    /// \warning: it must be called only once per packet, from SendOutgoingLogger.
+    ///
+    /// \return true if the packet was classified, false if not (i.e. it
+    /// does not appear to be part of a flow).
+    /// \param ipHeader packet's IP header
+    /// \param tcpHeader packet's TCP header
+    /// \param out_flowId packet's FlowId
+    /// \param out_packetId packet's identifier
+    bool CustomClassify(const Ipv4Header& ipHeader,
+                  const TcpHeader& tcpHeader,
                   uint32_t* out_flowId,
                   uint32_t* out_packetId);
 

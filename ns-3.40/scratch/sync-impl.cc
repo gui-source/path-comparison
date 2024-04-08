@@ -6,10 +6,14 @@
 #include <cmath>
 #include <algorithm>
 #include <typeinfo>
+#include <map>
+#include <list>
+#include <stdexcept>
 
 #include "ns3/core-module.h"
 #include "ns3/network-module.h"
 #include "ns3/internet-module.h"
+#include "ns3/flow-monitor-module.h"
 #include "ns3/point-to-point-module.h"
 #include "ns3/applications-module.h"
 #include "ns3/traffic-control-module.h"
@@ -23,123 +27,231 @@ using Random = effolkronium::random_static;
 // --- BEGIN OF SIMULATION CONFIGURATION PARAMETERS --- //
 // ---------------------------------------------------- //
 
+// Random loss
+bool randomLoss = false;
+
 // Random Seed
 uint32_t seed = 1;
 
 // ---[TRACES]---
 // Store Traces
 bool storeTraces = true;
-
 // Location to store traces
 std::string tracesPath = "traces/";
 
 // ---[SIMULATION PARAMETERS]---
 // Time to initiate the TCP connection
 Time startTimeTCP = Seconds(0.1);
+uint32_t stopTimeTCPSeconds = 30;
 
 // Time to stop the TCP connection
-Time stopTimeTCP = Seconds(100);
+Time stopTimeTCP = Seconds(stopTimeTCPSeconds);
 
 // Simulation stop time
-Time stopTimeSimulation = Seconds(101);
+Time stopTimeSimulation = Seconds(stopTimeTCPSeconds + 1);
 
 // ---[TCP PARAMETERS] ---
 Time intervalTCP = Seconds(1);
 uint32_t segmentSize = 512;
 uint32_t MTU_bytes = segmentSize + 54;
 uint8_t delAckCount = 2;
-uint8_t initialCwnd = 4;
+uint8_t initialCwnd = 10;
 std::string delAckTimeout = "200ms";
 std::string socketFactory = "ns3::TcpSocketFactory";
-std::string qdiscTypeId = "ns3::PFifoFastQueueDisc";
 std::string tcpRecovery = "ns3::TcpClassicRecovery";
 std::string tcpVariantId = "ns3::TcpNewReno";
-bool enableSack = false;
 double minRTO = 1.0;
+uint32_t tcpFlows = 2;
 
 // ---[TOPOLOGY PARAMETERS]---
-std::string flowDataRateStr = "10Gbps";
-std::string delay_serialization = "0ms";
+std::string srcThroughput1 = "10Mbps";
+std::string srcThroughput2 = "20Mbps";
+std::string throughput = "40Mbps";
+std::string delay = "3ms";
 
-std::string bandwidth_access = "10Gbps";
-std::string delay_access = "5ms";
+double linkLoss1 = 0.001;
+double linkLoss2 = 0.002;
 
-std::string long_delay_access = "200ms";
+// --- [DATA STRUCTS FOR SYNC] ---
+struct FlowSeqId{
+    uint32_t flow;
+    uint32_t seq;
 
-double lambda_1 = 1000.00;
-double lambda_2 = 1000.00;
+    bool operator==(const FlowSeqId &o) const {
+        return flow == o.flow && seq == o.seq;
+    }
 
-// ---[POINTER TO THE DEVICE THAT WILL IMPLEMENT PACKET DROPING]
-NetDeviceContainer * netDeviceToDropPacket = NULL;
+    bool operator<(const FlowSeqId &o) const {
+        return flow < o.flow || (flow == o.flow && seq < o.seq);
+    }
+};
 
+struct SyncTrack{
+    FlowSeqId id;
+    int flow;
+    Time syncExpire;
+    Time measureExpire;
+    bool active;
+};
+
+/// --- [GLOBAL VARIABLES FOR SYNC] --- 
+// to keep track of possible synchronisation
+SyncTrack * syncTrackerPtr = new SyncTrack{{}, 0, Seconds(0), Seconds(0), false};
+
+// to keep track of what packets we should check rtx for 
+Ipv4FlowClassifier classifier;
+// map from flow seq id of packets to lookout for rtxs
+std::map<FlowSeqId, Time> lookoutRTX1;
+std::map<FlowSeqId, Time> lookoutRTX2;
+// number of measurements for each flow
+uint32_t measureFlow = 0;
+// number of rtx for each flow
+uint32_t rtxFlow1 = 0;
+uint32_t rtxFlow2 = 0;
+// number of pkts for each flow
+uint32_t totalFlow1 = 0;
+uint32_t totalFlow2 = 0;
+
+// maximum time between packets that may be synced
+double delta = 0.0001;
+Time t_delta;
+
+// maximum time to stop looking for rtx
+Time stopMeasuring = Seconds(2);
+
+// --- [SYNC PARAMETERS] --- 
+double prec; 
+double alpha;
 
 // -------------------------------------------------- //
 // --- END OF SIMULATION CONFIGURATION PARAMETERS --- //
 // -------------------------------------------------- //
 
-// Global Variables
-Ptr<PacketSink> sinker;
-int packetsDroppedInQueue = 0;
-int64_t lastTotalRx = 0;
-uint32_t bytes_to_send = 50000;
+void updateStopTime() {
+    stopTimeTCP = Seconds(stopTimeTCPSeconds);
+    stopTimeSimulation = Seconds(stopTimeTCPSeconds + 1);
+}
 
-void InstallPoissonSend(Ptr<Node> src, Ipv4Address destAddress, uint16_t destPort, std::string socketFactory, 
-  double lambda, uint32_t packetSize, Time startTime, Time stopTime){
-    // Set up On time (just time for 1 packet)
-    Ptr<ConstantRandomVariable> onTime = CreateObject<ConstantRandomVariable> ();
-    DataRate dataRate(flowDataRateStr);
-    double onRate = ((double) packetSize) * 8.0 / dataRate.GetBitRate();
-    onTime->SetAttribute("Constant", DoubleValue(onRate));
-
-    std::cout << "On time: " << onRate << std::endl;
-    std::cout << "Mean inter-arrival time: " << 1/lambda - onRate << std::endl;
-
-    // Set up Poisson traffic
-    Ptr<ExponentialRandomVariable> interArrival = CreateObject<ExponentialRandomVariable> ();
-    interArrival->SetAttribute ("Mean", DoubleValue (1/lambda - onRate)); // Set the mean inter-arrival time (lambda)
-
-    OnOffHelper onoff (socketFactory, Address (InetSocketAddress (destAddress, destPort)));
-    onoff.SetAttribute ("DataRate", StringValue (flowDataRateStr));
-    onoff.SetAttribute ("OnTime", PointerValue (onTime));
-    onoff.SetAttribute ("OffTime", PointerValue (interArrival));
-    onoff.SetAttribute("PacketSize", UintegerValue(packetSize));
-
-    // Install the Poisson traffic source on src
-    ApplicationContainer apps = onoff.Install (src);
-    apps.Start (startTime);
-    apps.Stop (stopTime);
+void InstallBulkSend(Ptr<Node> node, Ipv4Address address, uint16_t port, std::string socketFactory, Time startTime){
+    BulkSendHelper source(socketFactory, InetSocketAddress(address, port));
+    ApplicationContainer sourceApps = source.Install(node);
+    // Add random start time between 0 to 2 seconds
+    float randomStartTime = Random::get<float>(0.f, 2.f);
+    sourceApps.Start(startTime + Seconds(randomStartTime));
+    sourceApps.Stop(stopTimeTCP);
 }
 
 void InstallPacketSink(Ptr<Node> dest, uint16_t port, std::string socketFactory, Time startTime, Time stopTime){
     PacketSinkHelper sink (socketFactory, InetSocketAddress(Ipv4Address::GetAny(), port));
     ApplicationContainer sinkApps = sink.Install(dest);
-    sinker = StaticCast<PacketSink>(sinkApps.Get(0));
+    StaticCast<PacketSink>(sinkApps.Get(0));
     sinkApps.Start(startTime);
     sinkApps.Stop(stopTime);
 }
 
-
-void enableLinkLoss(NetDeviceContainer ndToEnableLinkLoss, double percentage){
+void EnableLinkLoss(NetDeviceContainer ndToEnableLinkLoss, double percentage){
     // Enable link loss on initial direction of link
     Ptr<PointToPointNetDevice> device = ndToEnableLinkLoss.Get(0)->GetObject<PointToPointNetDevice> ();
     device->EnableLinkLoss(percentage, true, tracesPath);
 
-    // Enable link loss for other direction as well
-    device = ndToEnableLinkLoss.Get(1)->GetObject<PointToPointNetDevice> ();
-    device->EnableLinkLoss(percentage, true, tracesPath);
+    // // Enable link loss for other direction as well
+    // device = ndToEnableLinkLoss.Get(1)->GetObject<PointToPointNetDevice> ();
+    // device->EnableLinkLoss(percentage, true, tracesPath);
 }
+
+void UpdateSyncTracker(FlowSeqId id, int flow, Time syncExpire, Time measureExpire, bool active){
+    syncTrackerPtr->id = id;
+    syncTrackerPtr->flow = flow;
+    syncTrackerPtr->syncExpire = syncExpire;
+    syncTrackerPtr->measureExpire = measureExpire;
+    syncTrackerPtr->active = active;
+}
+
+FlowSeqId GetFlowSeqId(Ptr<const Packet> pkt) {
+    Ipv4Header * ipHeader = (Ipv4Header *) pkt->extractIpHeader();
+    TcpHeader * tcpHeader = (TcpHeader *) pkt->extractTcpHeader();
+    uint32_t seq = tcpHeader->GetSequenceNumber().GetValue();
+    uint32_t flowId;
+    uint32_t packetId;
+
+    Ptr<Packet> pkt2 = Copy(pkt);
+
+    if (!classifier.CustomClassify(*ipHeader, *tcpHeader, &flowId, &packetId) ){
+        std::cout << "WARNING: CLASSIFYING FAIL" << std::endl;
+    }
+    return FlowSeqId{flowId, seq};
+}
+
+void SyncGeneral(Ptr< const Packet > pkt, int flow) {
+    Time now = Simulator::Now();
+    Time syncExpire = now + t_delta;
+    Time measureExpire = now + stopMeasuring;
+
+    std::map<FlowSeqId, Time> *lookoutRTXPtr;
+    std::map<FlowSeqId, Time> *otherlookoutRTXPtr;
+    uint32_t *rtxCounterPtr;
+
+    FlowSeqId id = GetFlowSeqId(pkt);
+
+    if (flow == 1) {
+        lookoutRTXPtr = &lookoutRTX1;
+        otherlookoutRTXPtr = &lookoutRTX2;
+        rtxCounterPtr = &rtxFlow1;
+    }
+    else {
+        lookoutRTXPtr = &lookoutRTX2;
+        otherlookoutRTXPtr = &lookoutRTX1;
+        rtxCounterPtr = &rtxFlow2;
+    }
+
+    // check for seq in syncmap and time < expire
+    if ((*lookoutRTXPtr).find(id) != (*lookoutRTXPtr).end() && now <= (*lookoutRTXPtr)[id]){
+        (*rtxCounterPtr) ++;
+        (*lookoutRTXPtr).erase(id);
+    }
+
+    // all conditions meet to synchronise
+    if (syncTrackerPtr->active && syncTrackerPtr->flow != flow && syncTrackerPtr->syncExpire >= now) {
+        measureFlow ++;
+        
+        (*lookoutRTXPtr)[id] = measureExpire;
+        (*otherlookoutRTXPtr)[syncTrackerPtr->id] = syncTrackerPtr->measureExpire;
+
+        syncTrackerPtr->active = false;
+    }
+    else{
+        UpdateSyncTracker(id, flow, syncExpire, measureExpire, true);
+    }
+}
+
+void SyncPacketFlow1(Ptr< const Packet > pkt) {
+    SyncGeneral(pkt, 1);
+    totalFlow1 ++;
+}
+
+void SyncPacketFlow2(Ptr< const Packet > pkt) {
+    SyncGeneral(pkt, 2);
+    totalFlow2 ++;
+}
+
 
 int main (int argc, char *argv[]){
     // Command line arguments
     CommandLine cmd;
-    cmd.AddValue("tcpVariantId", "TCP variant", tcpVariantId);
-    // cmd.AddValue("enableSack", "Enable/disable sack in TCP", enableSack);
     cmd.AddValue("seed", "The random seed", seed);
-    cmd.AddValue("simStopTime", "The simulation stop time", stopTimeSimulation);
-    cmd.AddValue("initialCwnd", "Initial CWND window", initialCwnd);
-    cmd.AddValue("lambda_1", "Lambda value for flow 1", lambda_1);
-    cmd.AddValue("lambda_2", "Lambda value for flow 2", lambda_2);
+    cmd.AddValue("stopTime", "The stop time for TCP", stopTimeTCPSeconds);
+    cmd.AddValue("linkLoss1", "link1 packet loss rate", linkLoss1);
+    cmd.AddValue("linkLoss2", "link2 packet loss rate", linkLoss2);
+    cmd.AddValue("delta", "Maximum time between packets we can still sync", delta);
+    cmd.AddValue("throughput", "throughtput for all other links - at least srcThroughput 1 + 2", throughput);
+    cmd.AddValue("srcThroughput1", "throughput at src 1", srcThroughput1);
+    cmd.AddValue("srcThroughput2", "throughput at src 2", srcThroughput2);
+    cmd.AddValue("tcpFlows", "Number of tcp flows on each path", tcpFlows);
+    cmd.AddValue("randomLoss", "Turn on random loss or not", randomLoss);
     cmd.Parse(argc, argv);
+
+    t_delta = Seconds(delta);
+    updateStopTime();
 
     // Set Random Seed
     Random::seed(seed);
@@ -162,10 +274,6 @@ int main (int argc, char *argv[]){
 
     // Set default segment size of TCP packet to a specified value
     Config::SetDefault("ns3::TcpSocket::SegmentSize", UintegerValue(segmentSize));
-
-    // Enable/Disable SACK in TCP
-    Config::SetDefault("ns3::TcpSocketBase::Sack", BooleanValue(enableSack));
-
     Config::SetDefault("ns3::TcpSocketBase::MinRto", TimeValue(Seconds(minRTO)));
 
     // Initialise nodes
@@ -183,19 +291,17 @@ int main (int argc, char *argv[]){
     Names::Add("Client2", leftNodes.Get(1));
     Names::Add("Server", rightNodes.Get(0));
 
-    DataRate b_access(bandwidth_access);
-    Time d_access(delay_access);
-    Time d_serialization(delay_serialization);
-
     // Create the point-to-point link helpers and connect two router nodes
     PointToPointHelper pointToPointRouter;
-    pointToPointRouter.SetDeviceAttribute("DataRate", StringValue(bandwidth_access));
-    pointToPointRouter.SetChannelAttribute("Delay", StringValue(delay_access));
+    pointToPointRouter.SetDeviceAttribute("DataRate", StringValue(throughput));
+    pointToPointRouter.SetChannelAttribute("Delay", StringValue(delay));
 
-
-    PointToPointHelper pointToPointRouterWithDelay;
-    pointToPointRouterWithDelay.SetDeviceAttribute("DataRate", StringValue(bandwidth_access));
-    pointToPointRouterWithDelay.SetChannelAttribute("Delay", StringValue(long_delay_access ));
+    PointToPointHelper leftToRouter1;
+    leftToRouter1.SetDeviceAttribute("DataRate", StringValue(srcThroughput1));
+    leftToRouter1.SetChannelAttribute("Delay", StringValue(delay));
+    PointToPointHelper leftToRouter2;
+    leftToRouter2.SetDeviceAttribute("DataRate", StringValue(srcThroughput2));
+    leftToRouter2.SetChannelAttribute("Delay", StringValue(delay));
 
     NetDeviceContainer r1r2ND = pointToPointRouter.Install(routers.Get(0), routers.Get(1));
     Names::Add("IntR1->R2", r1r2ND.Get(0));
@@ -216,13 +322,13 @@ int main (int argc, char *argv[]){
     Names::Add("IntR5->R4", r4r5ND.Get(1));
 
     // Enable link loss 
-    enableLinkLoss(r3r5ND, 0.02);
-    enableLinkLoss(r4r5ND, 0.01);
+    EnableLinkLoss(r3r5ND, linkLoss1);
+    EnableLinkLoss(r4r5ND, linkLoss2);
 
-    NetDeviceContainer src1r1ND = pointToPointRouter.Install(leftNodes.Get(0), routers.Get(0));
+    NetDeviceContainer src1r1ND = leftToRouter1.Install(leftNodes.Get(0), routers.Get(0));
     Names::Add("IntCl1->R1", src1r1ND.Get(0));
     Names::Add("IntR1->Cl1", src1r1ND.Get(1));
-    NetDeviceContainer src2r1ND = pointToPointRouter.Install(leftNodes.Get(1), routers.Get(0));
+    NetDeviceContainer src2r1ND = leftToRouter2.Install(leftNodes.Get(1), routers.Get(0));
     Names::Add("IntCl2->R1", src2r1ND.Get(0));
     Names::Add("IntR1->Cl2", src2r1ND.Get(1));
     NetDeviceContainer r5destND = pointToPointRouter.Install(routers.Get(4), rightNodes.Get(0));
@@ -252,25 +358,67 @@ int main (int argc, char *argv[]){
     Ipv4InterfaceContainer r5destIPAddress = ipAddresses.Assign(r5destND);
     ipAddresses.NewNetwork(); 
 
-    std::cout << "From src 1 : " << src1r1IPAddress.GetAddress(0) << " > " << r5destIPAddress.GetAddress(1) << "||" << src1r1IPAddress.GetAddress(0).Get() << std::endl;
-
-    std::cout << "From src 2 : " << src2r1IPAddress.GetAddress(0) << " > " << r5destIPAddress.GetAddress(1) << "||" << src2r1IPAddress.GetAddress(0).Get() << std::endl;
+    std::cout << "From src 1 : " << src1r1IPAddress.GetAddress(0) << " > " << r5destIPAddress.GetAddress(1) << std::endl;
+    std::cout << "From src 2 : " << src2r1IPAddress.GetAddress(0) << " > " << r5destIPAddress.GetAddress(1) << std::endl;
 
     Ipv4GlobalRoutingHelper::PopulateRoutingTables();
 
     uint16_t server_port = 50000;
 
-    /* Install packet sink at receiver side */  
-    InstallPacketSink(rightNodes.Get(0), server_port, socketFactory, Seconds(0.01), stopTimeSimulation);
+    for (int i = 0; i < tcpFlows; i++) {
+        /* Install packet sink at receiver side */  
+        InstallPacketSink(rightNodes.Get(0), server_port + i, socketFactory, Seconds(0.01), stopTimeSimulation);
+        
+        /* Install Send application */
+        InstallBulkSend(leftNodes.Get(0), r5destIPAddress.GetAddress(1), server_port + i, socketFactory, Seconds(0.1));
+        InstallBulkSend(leftNodes.Get(1), r5destIPAddress.GetAddress(1), server_port + i, socketFactory, Seconds(0.1));
+    }
 
-    /* Install PoissonSend application */
-    InstallPoissonSend(leftNodes.Get(0), r5destIPAddress.GetAddress(1), server_port, socketFactory, lambda_1, segmentSize, Seconds(0.2), stopTimeTCP);
-    InstallPoissonSend(leftNodes.Get(1), r5destIPAddress.GetAddress(1), server_port, socketFactory, lambda_1, segmentSize, Seconds(0.2), stopTimeTCP);
+    // Install at router 2
+    r2r3ND.Get(0)->TraceConnectWithoutContext("MacTx",  MakeCallback(&SyncPacketFlow1));
+    r2r4ND.Get(0)->TraceConnectWithoutContext("MacTx",  MakeCallback(&SyncPacketFlow2));
 
     pointToPointRouter.EnableAsciiAll(tracesPath);
+
+    // schedule random link loss
+    if (randomLoss){
+        Simulator::Schedule(Seconds(10), &EnableLinkLoss, r5destND, 1);
+        Simulator::Schedule(Seconds(12), &EnableLinkLoss, r5destND, 0);
+    }
+
+    // // schedule congestion
+    // Config::Set("/NodeList/[i]/DeviceList/[i]/$ns3::PointToPointNetDevice/DataRate", StringValue(3Mbps) );
 
     Simulator::Stop(stopTimeSimulation);
     Simulator::Run();
     Simulator::Destroy();
+    delete syncTrackerPtr;
+
+    std::cout << "Finished simulation! \nRan for [" << stopTimeTCP.GetSeconds() << "] seconds, throughput ["<< throughput << "], srcThroughput1 [" << srcThroughput1 << "], srcThroughput2 [" << srcThroughput2 << "], num of flows [" << tcpFlows << "] linkLoss1 [" << linkLoss1 << "], linkLoss2 [" << linkLoss2 << "]." << std::endl;
+
+    uint32_t syncedPkts = measureFlow;
+    std:: cout << "Synced ["<< syncedPkts << "] total packets (n) , and ["<< ((double) syncedPkts) / stopTimeTCP.GetSeconds() << "] packets per second" << std::endl;
+    std::cout << "Total size of rtxs 1 [" << rtxFlow1 << "] 2 [" << rtxFlow2 << "]" << std::endl;
+    std::cout << "Total number of sent pkts 1 [" << totalFlow1 << "] 2 [" << totalFlow2 << "]" << std::endl;
+    std::cout << "Lambda 1 [" << ((double) totalFlow1 / stopTimeTCPSeconds) << "] 2 [" << ((double) totalFlow2 / stopTimeTCPSeconds)  << "]" << std::endl;
+    
+
+    // std::cout << "Parameters:"<< std::endl;
+    // std::cout << "delta - max time btwn packets that can be synced [" << delta << "]" << std::endl;
+    // if (prec != 0){
+    //     double confidence1 = CalculateConfidence(prec, syncedPkts, rtxFlow1);
+    //     double confidence2 = CalculateConfidence(prec, syncedPkts, rtxFlow2);
+    //     std::cout << "E - precision [" << prec << "]" << std::endl;
+    //     std::cout << "------";
+    //     std::cout << "Confidence level (two-tailed) - flow 1: [" << confidence1 << "], flow 2: [" << confidence2 <<  "]" << std::endl;
+    // }
+    // if (alpha != 0){
+    //     double prec1 = CalculatePrecision(alpha, syncedPkts, rtxFlow1);
+    //     double prec2 = CalculatePrecision(alpha, syncedPkts, rtxFlow2);
+    //     std::cout << "\\alpha - confidence level [" << alpha << "]" << std::endl;
+    //     std::cout << "------";
+    //     std::cout << "Precision - flow 1: [" << prec1 << "], flow 2: [" << prec2 << "]" << std::endl;
+    // }
+    // std::cout << "\\hat{p} - estimated packet loss rate 1: [" << ((double) rtxFlow1 / syncedPkts) << "] 2: [" << ((double) rtxFlow2 / syncedPkts) << "]" << std::endl;
     return 0;
 }

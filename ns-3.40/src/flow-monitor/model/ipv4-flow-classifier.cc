@@ -95,6 +95,69 @@ Ipv4FlowClassifier::Ipv4FlowClassifier()
 {
 }
 
+bool 
+Ipv4FlowClassifier::CustomClassify(const Ipv4Header& ipHeader,
+                             const TcpHeader& tcpHeader,
+                             uint32_t* out_flowId,
+                             uint32_t* out_packetId)
+{
+    if (ipHeader.GetFragmentOffset() > 0)
+    {
+        // Ignore fragments: they don't carry a valid L4 header
+        return false;
+    }
+
+    FiveTuple tuple;
+    tuple.sourceAddress = ipHeader.GetSource();
+    tuple.destinationAddress = ipHeader.GetDestination();
+    tuple.protocol = ipHeader.GetProtocol();
+
+    if ((tuple.protocol != UDP_PROT_NUMBER) && (tuple.protocol != TCP_PROT_NUMBER))
+    {
+        return false;
+    }
+
+    uint32_t srcPort = tcpHeader.GetSourcePort();
+
+    uint32_t dstPort = tcpHeader.GetDestinationPort();
+
+
+    tuple.sourcePort = srcPort;
+    tuple.destinationPort = dstPort;
+
+    // try to insert the tuple, but check if it already exists
+    auto insert = m_flowMap.insert(std::pair<FiveTuple, FlowId>(tuple, 0));
+
+    // if the insertion succeeded, we need to assign this tuple a new flow identifier
+    if (insert.second)
+    {
+        FlowId newFlowId = GetNewFlowId();
+        insert.first->second = newFlowId;
+        m_flowPktIdMap[newFlowId] = 0;
+        m_flowDscpMap[newFlowId];
+    }
+    else
+    {
+        m_flowPktIdMap[insert.first->second]++;
+    }
+
+    // increment the counter of packets with the same DSCP value
+    Ipv4Header::DscpType dscp = ipHeader.GetDscp();
+    auto dscpInserter = m_flowDscpMap[insert.first->second].insert(
+        std::pair<Ipv4Header::DscpType, uint32_t>(dscp, 1));
+
+    // if the insertion did not succeed, we need to increment the counter
+    if (!dscpInserter.second)
+    {
+        m_flowDscpMap[insert.first->second][dscp]++;
+    }
+
+    *out_flowId = insert.first->second;
+    *out_packetId = m_flowPktIdMap[*out_flowId];
+
+    return true;
+}
+
 bool
 Ipv4FlowClassifier::Classify(const Ipv4Header& ipHeader,
                              Ptr<const Packet> ipPayload,

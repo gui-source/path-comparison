@@ -496,6 +496,7 @@ class Packet : public SimpleRefCount<Packet>
      * Custom Functions for packet header processing (Petros)
      */
     Chunk * extractTcpHeader () const;
+    Chunk * extractIpHeader () const;
 
     uint32_t GetPayloadSize () const;
 

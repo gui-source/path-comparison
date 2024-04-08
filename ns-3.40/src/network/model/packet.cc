@@ -492,6 +492,33 @@ Packet::extractTcpHeader () const
   return NULL;
 }
 
+
+Chunk *
+Packet::extractIpHeader () const
+{
+  PacketMetadata::ItemIterator i = m_metadata.BeginItem (m_buffer);
+  while (i.HasNext())
+  {
+    PacketMetadata::Item item = i.Next ();
+    if(item.type == PacketMetadata::Item::HEADER){
+      if(item.tid.GetName() == "ns3::Ipv4Header"){
+        NS_ASSERT (item.tid.HasConstructor ());
+        Callback<ObjectBase *> constructor = item.tid.GetConstructor ();
+        NS_ASSERT (!constructor.IsNull ());
+        ObjectBase *instance = constructor ();
+        NS_ASSERT (instance != 0);
+        Chunk *chunk = dynamic_cast<Chunk *> (instance);
+        NS_ASSERT (chunk != 0);
+        Buffer::Iterator end = item.current;
+        end.Next (item.currentSize); // move from start 
+        chunk->Deserialize (item.current, end);
+        return chunk;
+      }
+    }
+  }
+  return NULL;
+}
+
 void
 Packet::Print(std::ostream& os) const
 {
