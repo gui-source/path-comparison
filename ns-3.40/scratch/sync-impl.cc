@@ -30,6 +30,12 @@ using Random = effolkronium::random_static;
 // Random loss
 bool randomLoss = false;
 
+// Time-bound
+bool timeBound = true;
+bool targetZeAchieved = false;
+double targetZE;
+double targetSeconds;
+
 // Random Seed
 uint32_t seed = 1;
 
@@ -103,8 +109,8 @@ Ipv4FlowClassifier classifier;
 // map from flow seq id of packets to lookout for rtxs
 std::map<FlowSeqId, Time> lookoutRTX1;
 std::map<FlowSeqId, Time> lookoutRTX2;
-// number of measurements for each flow
-uint32_t measureFlow = 0;
+// number of measurements for each flow - number of synced packets
+uint32_t syncedPkts = 0;
 // number of rtx for each flow
 uint32_t rtxFlow1 = 0;
 uint32_t rtxFlow2 = 0;
@@ -119,10 +125,6 @@ Time t_delta;
 // maximum time to stop looking for rtx
 Time stopMeasuring = Seconds(2);
 
-// --- [SYNC PARAMETERS] --- 
-double prec; 
-double alpha;
-
 // -------------------------------------------------- //
 // --- END OF SIMULATION CONFIGURATION PARAMETERS --- //
 // -------------------------------------------------- //
@@ -135,9 +137,11 @@ void updateStopTime() {
 void InstallBulkSend(Ptr<Node> node, Ipv4Address address, uint16_t port, std::string socketFactory, Time startTime){
     BulkSendHelper source(socketFactory, InetSocketAddress(address, port));
     ApplicationContainer sourceApps = source.Install(node);
-    // Add random start time between 0 to 2 seconds
-    float randomStartTime = Random::get<float>(0.f, 2.f);
-    sourceApps.Start(startTime + Seconds(randomStartTime));
+    // // Add random start time between 0 to 2 seconds
+    Time randomStartTime = Seconds(Random::get<double>(0.f, 0.5)) + startTime ;
+    // std::cout << "src start time " << ((double)randomStartTime.GetMilliSeconds()/1000) << std::endl;
+
+    sourceApps.Start(startTime);
     sourceApps.Stop(stopTimeTCP);
 }
 
@@ -182,7 +186,32 @@ FlowSeqId GetFlowSeqId(Ptr<const Packet> pkt) {
     return FlowSeqId{flowId, seq};
 }
 
+void UpdateTargetZe(){
+    if (syncedPkts > 0 && rtxFlow1 > 0 && rtxFlow2 > 0 && rtxFlow1 != syncedPkts && rtxFlow2 != syncedPkts){
+        double phat1 = (double) rtxFlow1 / (double) syncedPkts;
+        double phat2 = (double) rtxFlow2 / (double) syncedPkts;
+
+        // std::cout << "syncedPkts " << syncedPkts << " rtx flow 1 " << rtxFlow1 << " 2 " << rtxFlow2 << std::endl;
+        // std::cout << "phat 1 " << phat1 << " phat 2 " << phat2 << std::endl;
+        double currentZE1 = std::sqrt(syncedPkts / (phat1 * (1 - phat1)));
+        double currentZE2 = std::sqrt(syncedPkts / (phat2 * (1 - phat2)));
+
+        // std::cout << "currentZE1 " << currentZE1 << " 2 " << currentZE2 << std::endl;
+        targetZeAchieved = (bool) (currentZE1 > targetZE && currentZE2 > targetZE) ;
+    }
+}
+
 void SyncGeneral(Ptr< const Packet > pkt, int flow) {
+    if (!timeBound ) {
+        if (targetZeAchieved) {
+            if (targetSeconds == 0) {
+                std::cout << "Target ze achieved, syncedPkts : " << syncedPkts << std::endl;
+                targetSeconds = Simulator::Now().GetMilliSeconds() / 1000.0 ;
+            }
+            return;
+        }
+        UpdateTargetZe();
+    }
     Time now = Simulator::Now();
     Time syncExpire = now + t_delta;
     Time measureExpire = now + stopMeasuring;
@@ -212,7 +241,7 @@ void SyncGeneral(Ptr< const Packet > pkt, int flow) {
 
     // all conditions meet to synchronise
     if (syncTrackerPtr->active && syncTrackerPtr->flow != flow && syncTrackerPtr->syncExpire >= now) {
-        measureFlow ++;
+        syncedPkts ++;
         
         (*lookoutRTXPtr)[id] = measureExpire;
         (*otherlookoutRTXPtr)[syncTrackerPtr->id] = syncTrackerPtr->measureExpire;
@@ -224,7 +253,29 @@ void SyncGeneral(Ptr< const Packet > pkt, int flow) {
     }
 }
 
+void CleanMaps() {
+    Time now = Simulator::Now();
+    auto it = lookoutRTX1.begin();
+    while (it != lookoutRTX1.end()) {
+        if (it->second > now) {
+            it = lookoutRTX1.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    it = lookoutRTX2.begin();
+    while (it != lookoutRTX2.end()) {
+        if (it->second > now) {
+            it = lookoutRTX2.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 void SyncPacketFlow1(Ptr< const Packet > pkt) {
+    
     SyncGeneral(pkt, 1);
     totalFlow1 ++;
 }
@@ -248,8 +299,12 @@ int main (int argc, char *argv[]){
     cmd.AddValue("srcThroughput2", "throughput at src 2", srcThroughput2);
     cmd.AddValue("tcpFlows", "Number of tcp flows on each path", tcpFlows);
     cmd.AddValue("randomLoss", "Turn on random loss or not", randomLoss);
+    cmd.AddValue("targetZE", "Turn on time-unbound mode", targetZE);
     cmd.Parse(argc, argv);
 
+    if (targetZE != 0){
+        timeBound = false;
+    }
     t_delta = Seconds(delta);
     updateStopTime();
 
@@ -386,6 +441,11 @@ int main (int argc, char *argv[]){
         Simulator::Schedule(Seconds(12), &EnableLinkLoss, r5destND, 0);
     }
 
+    // periodically clean maps
+    for (int i = 5; i < stopTimeTCPSeconds; i += 5) {
+        Simulator::Schedule(Seconds(i), &CleanMaps);
+    }
+
     // // schedule congestion
     // Config::Set("/NodeList/[i]/DeviceList/[i]/$ns3::PointToPointNetDevice/DataRate", StringValue(3Mbps) );
 
@@ -393,32 +453,28 @@ int main (int argc, char *argv[]){
     Simulator::Run();
     Simulator::Destroy();
     delete syncTrackerPtr;
+    if (!timeBound && !targetZeAchieved) {
+        std::cout << "Not enough time for time-unbound mode" << std::endl;
+        double phat1 = (double) rtxFlow1 / (double) syncedPkts;
+        double phat2 = (double) rtxFlow2 / (double) syncedPkts;
 
-    std::cout << "Finished simulation! \nRan for [" << stopTimeTCP.GetSeconds() << "] seconds, throughput ["<< throughput << "], srcThroughput1 [" << srcThroughput1 << "], srcThroughput2 [" << srcThroughput2 << "], num of flows [" << tcpFlows << "] linkLoss1 [" << linkLoss1 << "], linkLoss2 [" << linkLoss2 << "]." << std::endl;
+        // std::cout << "syncedPkts " << syncedPkts << " rtx flow 1 " << rtxFlow1 << " 2 " << rtxFlow2 << std::endl;
+        // std::cout << "phat 1 " << phat1 << " phat 2 " << phat2 << std::endl;
+        double currentZE1 = std::sqrt(syncedPkts / (phat1 * (1 - phat1)));
+        double currentZE2 = std::sqrt(syncedPkts / (phat2 * (1 - phat2)));
 
-    uint32_t syncedPkts = measureFlow;
+        std::cout << "currentZE1 " << currentZE1 << " 2 " << currentZE2 << std::endl;
+        return 1;
+    }
+
+    std::cout << "Finished simulation!" << std::endl;
+    if (!timeBound && targetZeAchieved) std::cout << "Time [" << targetSeconds << "]" << std::endl;
+    std::cout << "Ran for [" << stopTimeTCP.GetSeconds() << "] seconds, throughput ["<< throughput << "], srcThroughput1 [" << srcThroughput1 << "], srcThroughput2 [" << srcThroughput2 << "], num of flows [" << tcpFlows << "] linkLoss1 [" << linkLoss1 << "], linkLoss2 [" << linkLoss2 << "]." << std::endl;
+
     std:: cout << "Synced ["<< syncedPkts << "] total packets (n) , and ["<< ((double) syncedPkts) / stopTimeTCP.GetSeconds() << "] packets per second" << std::endl;
     std::cout << "Total size of rtxs 1 [" << rtxFlow1 << "] 2 [" << rtxFlow2 << "]" << std::endl;
     std::cout << "Total number of sent pkts 1 [" << totalFlow1 << "] 2 [" << totalFlow2 << "]" << std::endl;
     std::cout << "Lambda 1 [" << ((double) totalFlow1 / stopTimeTCPSeconds) << "] 2 [" << ((double) totalFlow2 / stopTimeTCPSeconds)  << "]" << std::endl;
     
-
-    // std::cout << "Parameters:"<< std::endl;
-    // std::cout << "delta - max time btwn packets that can be synced [" << delta << "]" << std::endl;
-    // if (prec != 0){
-    //     double confidence1 = CalculateConfidence(prec, syncedPkts, rtxFlow1);
-    //     double confidence2 = CalculateConfidence(prec, syncedPkts, rtxFlow2);
-    //     std::cout << "E - precision [" << prec << "]" << std::endl;
-    //     std::cout << "------";
-    //     std::cout << "Confidence level (two-tailed) - flow 1: [" << confidence1 << "], flow 2: [" << confidence2 <<  "]" << std::endl;
-    // }
-    // if (alpha != 0){
-    //     double prec1 = CalculatePrecision(alpha, syncedPkts, rtxFlow1);
-    //     double prec2 = CalculatePrecision(alpha, syncedPkts, rtxFlow2);
-    //     std::cout << "\\alpha - confidence level [" << alpha << "]" << std::endl;
-    //     std::cout << "------";
-    //     std::cout << "Precision - flow 1: [" << prec1 << "], flow 2: [" << prec2 << "]" << std::endl;
-    // }
-    // std::cout << "\\hat{p} - estimated packet loss rate 1: [" << ((double) rtxFlow1 / syncedPkts) << "] 2: [" << ((double) rtxFlow2 / syncedPkts) << "]" << std::endl;
     return 0;
 }
