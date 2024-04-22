@@ -143,9 +143,6 @@ int main (int argc, char *argv[]){
 
     Ipv4GlobalRoutingHelper::PopulateRoutingTables();
 
-    /* Packet Printing is mandatory for the Packet Drop Test */
-    Packet::EnablePrinting();
-
     InstallSourceSink(leftNodes.Get(0), routerToRight1IPAddress.GetAddress(1), lambda_1);
     InstallSourceSink(leftNodes.Get(0), routerToRight2IPAddress.GetAddress(1), lambda_1);
 
