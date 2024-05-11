@@ -28,7 +28,7 @@ using Random = effolkronium::random_static;
 // ---------------------------------------------------- //
 
 // Random loss
-bool randomLoss = false;
+float lossDuration = 0.0;
 
 // Time-bound
 bool timeBound = true;
@@ -138,7 +138,7 @@ void InstallBulkSend(Ptr<Node> node, Ipv4Address address, uint16_t port, std::st
     BulkSendHelper source(socketFactory, InetSocketAddress(address, port));
     ApplicationContainer sourceApps = source.Install(node);
     // // Add random start time between 0 to 2 seconds
-    Time randomStartTime = Seconds(Random::get<double>(0.f, 0.5)) + startTime ;
+    Time randomStartTime = Seconds(Random::get<double>(0.f, 2.f)) + startTime ;
     // std::cout << "src start time " << ((double)randomStartTime.GetMilliSeconds()/1000) << std::endl;
 
     sourceApps.Start(startTime);
@@ -298,7 +298,7 @@ int main (int argc, char *argv[]){
     cmd.AddValue("srcThroughput1", "throughput at src 1", srcThroughput1);
     cmd.AddValue("srcThroughput2", "throughput at src 2", srcThroughput2);
     cmd.AddValue("tcpFlows", "Number of tcp flows on each path", tcpFlows);
-    cmd.AddValue("randomLoss", "Turn on random loss or not", randomLoss);
+    cmd.AddValue("lossDuration", "Duration for total loss starting at t=10s", lossDuration);
     cmd.AddValue("targetZE", "Turn on time-unbound mode", targetZE);
     cmd.Parse(argc, argv);
 
@@ -435,19 +435,14 @@ int main (int argc, char *argv[]){
 
     pointToPointRouter.EnableAsciiAll(tracesPath);
 
-    // schedule random link loss
-    if (randomLoss){
-        Simulator::Schedule(Seconds(10), &EnableLinkLoss, r5destND, 1);
-        Simulator::Schedule(Seconds(12), &EnableLinkLoss, r5destND, 0);
-    }
+    // schedule link loss
+    Simulator::Schedule(Seconds(10), &EnableLinkLoss, r5destND, 1);
+    Simulator::Schedule(Seconds(10 + lossDuration), &EnableLinkLoss, r5destND, 0);
 
     // periodically clean maps
     for (int i = 5; i < stopTimeTCPSeconds; i += 5) {
         Simulator::Schedule(Seconds(i), &CleanMaps);
     }
-
-    // // schedule congestion
-    // Config::Set("/NodeList/[i]/DeviceList/[i]/$ns3::PointToPointNetDevice/DataRate", StringValue(3Mbps) );
 
     Simulator::Stop(stopTimeSimulation);
     Simulator::Run();
@@ -458,8 +453,6 @@ int main (int argc, char *argv[]){
         double phat1 = (double) rtxFlow1 / (double) syncedPkts;
         double phat2 = (double) rtxFlow2 / (double) syncedPkts;
 
-        // std::cout << "syncedPkts " << syncedPkts << " rtx flow 1 " << rtxFlow1 << " 2 " << rtxFlow2 << std::endl;
-        // std::cout << "phat 1 " << phat1 << " phat 2 " << phat2 << std::endl;
         double currentZE1 = std::sqrt(syncedPkts / (phat1 * (1 - phat1)));
         double currentZE2 = std::sqrt(syncedPkts / (phat2 * (1 - phat2)));
 
