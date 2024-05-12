@@ -1,3 +1,7 @@
+The code for the research project "Network Path Performance Testing" is in the ns-3.40 directory.
+
+The relevant code for Chapter 5 is in the "one-path-alternate" branch, for Chapter 6 is in the "stat-flow" branch, and for Chapters 7 and 8 is in the "sync-impl" branch.
+
 This is **_ns-3-allinone_**, a repository with some scripts to download
 and build the core components around the 
 [ns-3 network simulator](https://www.nsnam.org).
